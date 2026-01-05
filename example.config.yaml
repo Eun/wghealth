@@ -1,0 +1,25 @@
+# WireGuard Client Configuration Example
+
+# Client settings
+private_key: "YourBase64EncodedPrivateKeyHere=="
+address: "10.0.0.2/24"  # Client's VPN IP address
+dns:
+  - "8.8.8.8"
+  - "8.8.4.4"
+mtu: 1420  # Optional, defaults to 1420
+
+# Server settings
+server:
+  public_key: "ServerPublicKeyBase64Here=="
+  endpoint: "vpn.example.com:51820"  # Server IP:port
+  allowed_ips:
+    - "0.0.0.0/0"  # Route all traffic through VPN
+    # - "10.0.0.0/24"  # Or only specific networks
+  preshared_key: ""  # Optional pre-shared key for additional security
+  persistent_keepalive: 25  # Optional, send keepalive every N seconds
+
+# Ping test configuration
+ping:
+  target: "8.8.8.8"  # IP or hostname to ping
+  timeout: 10  # Timeout in seconds (default: 10)
+  count: 4  # Number of pings (default: 1)
