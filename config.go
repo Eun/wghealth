@@ -23,8 +23,10 @@ type Config struct {
 	// Path to WireGuard configuration file
 	WireGuardConfigPath string `yaml:"wireguard_config_path"`
 
-	// Ping configuration
-	Ping PingConfig `yaml:"ping"`
+	// Health check configuration (only one should be specified)
+	Ping  *PingConfig  `yaml:"ping,omitempty"`
+	HTTP  *HTTPConfig  `yaml:"http,omitempty"`
+	HTTPS *HTTPSConfig `yaml:"https,omitempty"`
 
 	// Parsed WireGuard settings (internal use)
 	parsedWG *WireGuardConfig
@@ -52,6 +54,23 @@ type PingConfig struct {
 	Count   int    `yaml:"count,omitempty"`
 }
 
+// HTTPConfig represents the HTTP health check configuration
+type HTTPConfig struct {
+	URL                 string `yaml:"url"`
+	Timeout             int    `yaml:"timeout,omitempty"`                 // in seconds
+	Method              string `yaml:"method,omitempty"`                  // default: GET
+	ExpectedStatusCodes []int  `yaml:"expected_status_codes,omitempty"`   // expected HTTP status codes (default: [200])
+}
+
+// HTTPSConfig represents the HTTPS health check configuration
+type HTTPSConfig struct {
+	URL                 string `yaml:"url"`
+	Timeout             int    `yaml:"timeout,omitempty"`                 // in seconds
+	Method              string `yaml:"method,omitempty"`                  // default: GET
+	InsecureSkipVerify  bool   `yaml:"insecure_skip_verify,omitempty"`    // skip certificate verification
+	ExpectedStatusCodes []int  `yaml:"expected_status_codes,omitempty"`   // expected HTTP status codes (default: [200])
+}
+
 // LoadConfig loads configuration from a YAML file
 func LoadConfig(path string) (*Config, error) {
 	data, err := os.ReadFile(path)
@@ -64,12 +83,36 @@ func LoadConfig(path string) (*Config, error) {
 		return nil, fmt.Errorf("failed to parse config file: %w", err)
 	}
 
-	// Set ping defaults
-	if config.Ping.Timeout == 0 {
-		config.Ping.Timeout = 10
+	// Set health check defaults
+	if config.Ping != nil {
+		if config.Ping.Timeout == 0 {
+			config.Ping.Timeout = 10
+		}
+		if config.Ping.Count == 0 {
+			config.Ping.Count = 1
+		}
 	}
-	if config.Ping.Count == 0 {
-		config.Ping.Count = 1
+	if config.HTTP != nil {
+		if config.HTTP.Timeout == 0 {
+			config.HTTP.Timeout = 10
+		}
+		if config.HTTP.Method == "" {
+			config.HTTP.Method = "GET"
+		}
+		if len(config.HTTP.ExpectedStatusCodes) == 0 {
+			config.HTTP.ExpectedStatusCodes = []int{200}
+		}
+	}
+	if config.HTTPS != nil {
+		if config.HTTPS.Timeout == 0 {
+			config.HTTPS.Timeout = 10
+		}
+		if config.HTTPS.Method == "" {
+			config.HTTPS.Method = "GET"
+		}
+		if len(config.HTTPS.ExpectedStatusCodes) == 0 {
+			config.HTTPS.ExpectedStatusCodes = []int{200}
+		}
 	}
 
 	// Load and parse WireGuard configuration file
@@ -224,8 +267,32 @@ func (c *Config) Validate() error {
 		}
 	}
 
-	if c.Ping.Target == "" {
-		return fmt.Errorf("ping.target is required")
+	// Validate that exactly one health check is configured
+	checksConfigured := 0
+	if c.Ping != nil {
+		checksConfigured++
+		if c.Ping.Target == "" {
+			return fmt.Errorf("ping.target is required")
+		}
+	}
+	if c.HTTP != nil {
+		checksConfigured++
+		if c.HTTP.URL == "" {
+			return fmt.Errorf("http.url is required")
+		}
+	}
+	if c.HTTPS != nil {
+		checksConfigured++
+		if c.HTTPS.URL == "" {
+			return fmt.Errorf("https.url is required")
+		}
+	}
+
+	if checksConfigured == 0 {
+		return fmt.Errorf("at least one health check (ping, http, or https) must be configured")
+	}
+	if checksConfigured > 1 {
+		return fmt.Errorf("only one health check type can be configured at a time")
 	}
 
 	return nil

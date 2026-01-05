@@ -8,13 +8,17 @@ package wghealth
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"encoding/hex"
 	"fmt"
+	"io"
 	"math/rand"
+	"net/http"
 	"net/netip"
 	"strings"
 	"time"
 
+	"github.com/rs/zerolog/log"
 	"golang.org/x/net/icmp"
 	"golang.org/x/net/ipv4"
 	"golang.org/x/net/ipv6"
@@ -239,7 +243,11 @@ func (c *Client) Ping() error {
 		}
 
 		// Success
-		fmt.Printf("Reply from %s: seq=%d time=%v\n", targetAddr, i, latency)
+		log.Info().
+			Str("target", targetAddr.String()).
+			Int("seq", i).
+			Dur("latency", latency).
+			Msg("Ping reply received")
 		successCount++
 
 		// Wait before next ping (if not the last one)
@@ -255,7 +263,10 @@ func (c *Client) Ping() error {
 		return fmt.Errorf("all pings failed")
 	}
 
-	fmt.Printf("\nPing statistics: %d/%d packets successful\n", successCount, count)
+	log.Info().
+		Int("successful", successCount).
+		Int("total", count).
+		Msg("Ping statistics")
 	return nil
 }
 
@@ -286,6 +297,137 @@ func (c *Client) resolveTarget(target string) (netip.Addr, error) {
 	}
 
 	return addr, nil
+}
+
+// HTTPCheck performs an HTTP health check
+func (c *Client) HTTPCheck() error {
+	if c.tun == nil {
+		return fmt.Errorf("client not connected")
+	}
+
+	httpConfig := c.config.HTTP
+	timeout := time.Duration(httpConfig.Timeout) * time.Second
+
+	// Create HTTP client using the netstack dialer
+	httpClient := &http.Client{
+		Timeout: timeout,
+		Transport: &http.Transport{
+			DialContext: c.tun.DialContext,
+		},
+	}
+
+	// Create request
+	req, err := http.NewRequest(httpConfig.Method, httpConfig.URL, nil)
+	if err != nil {
+		return fmt.Errorf("failed to create HTTP request: %w", err)
+	}
+
+	// Perform request
+	start := time.Now()
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("HTTP request failed: %w", err)
+	}
+	defer resp.Body.Close()
+	latency := time.Since(start)
+
+	// Read response body (optional, but good practice to drain it)
+	_, _ = io.Copy(io.Discard, resp.Body)
+
+	// Check if status code is in the expected list
+	statusOK := false
+	for _, expectedCode := range httpConfig.ExpectedStatusCodes {
+		if resp.StatusCode == expectedCode {
+			statusOK = true
+			break
+		}
+	}
+	
+	if !statusOK {
+		log.Error().
+			Int("status_code", resp.StatusCode).
+			Str("status", resp.Status).
+			Ints("expected_codes", httpConfig.ExpectedStatusCodes).
+			Dur("latency", latency).
+			Msg("HTTP request returned unexpected status")
+		return fmt.Errorf("HTTP request returned unexpected status: got %d, expected one of %v", resp.StatusCode, httpConfig.ExpectedStatusCodes)
+	}
+
+	log.Info().
+		Int("status_code", resp.StatusCode).
+		Str("status", resp.Status).
+		Dur("latency", latency).
+		Msg("HTTP request successful")
+
+	return nil
+}
+
+// HTTPSCheck performs an HTTPS health check
+func (c *Client) HTTPSCheck() error {
+	if c.tun == nil {
+		return fmt.Errorf("client not connected")
+	}
+
+	httpsConfig := c.config.HTTPS
+	timeout := time.Duration(httpsConfig.Timeout) * time.Second
+
+	// Create HTTPS client using the netstack dialer
+	tlsConfig := &tls.Config{
+		InsecureSkipVerify: httpsConfig.InsecureSkipVerify,
+	}
+
+	httpClient := &http.Client{
+		Timeout: timeout,
+		Transport: &http.Transport{
+			DialContext: c.tun.DialContext,
+			TLSClientConfig: tlsConfig,
+		},
+	}
+
+	// Create request
+	req, err := http.NewRequest(httpsConfig.Method, httpsConfig.URL, nil)
+	if err != nil {
+		return fmt.Errorf("failed to create HTTPS request: %w", err)
+	}
+
+	// Perform request
+	start := time.Now()
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("HTTPS request failed: %w", err)
+	}
+	defer resp.Body.Close()
+	latency := time.Since(start)
+
+	// Read response body (optional, but good practice to drain it)
+	_, _ = io.Copy(io.Discard, resp.Body)
+
+	// Check if status code is in the expected list
+	statusOK := false
+	for _, expectedCode := range httpsConfig.ExpectedStatusCodes {
+		if resp.StatusCode == expectedCode {
+			statusOK = true
+			break
+		}
+	}
+	
+	if !statusOK {
+		log.Error().
+			Int("status_code", resp.StatusCode).
+			Str("status", resp.Status).
+			Ints("expected_codes", httpsConfig.ExpectedStatusCodes).
+			Dur("latency", latency).
+			Msg("HTTPS request returned unexpected status")
+		return fmt.Errorf("HTTPS request returned unexpected status: got %d, expected one of %v", resp.StatusCode, httpsConfig.ExpectedStatusCodes)
+	}
+
+	log.Info().
+		Int("status_code", resp.StatusCode).
+		Str("status", resp.Status).
+		Dur("latency", latency).
+		Msg("HTTPS request successful")
+
+	return nil
 }
 
 // Close closes the WireGuard connection
