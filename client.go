@@ -53,10 +53,11 @@ func (c *Client) Connect() error {
 	}
 
 	// Create netstack TUN device (userspace network stack, no root required)
+	wgConfig := c.config.GetWireGuardConfig()
 	tunDevice, tnet, err := netstack.CreateNetTUN(
 		[]netip.Addr{clientAddr},
 		dnsServers,
-		c.config.MTU,
+		wgConfig.MTU,
 	)
 	if err != nil {
 		return fmt.Errorf("failed to create TUN device: %w", err)
@@ -91,25 +92,26 @@ func (c *Client) Connect() error {
 // buildIPCConfig creates the IPC configuration string for the WireGuard device
 func (c *Client) buildIPCConfig() (string, error) {
 	var config strings.Builder
+	wgConfig := c.config.GetWireGuardConfig()
 
 	// Set private key (must be hex-encoded for IPC)
-	privateKeyHex, err := keyToHex(c.config.PrivateKey)
+	privateKeyHex, err := keyToHex(wgConfig.PrivateKey)
 	if err != nil {
 		return "", fmt.Errorf("failed to encode private_key: %w", err)
 	}
 	config.WriteString(fmt.Sprintf("private_key=%s\n", privateKeyHex))
 
 	// Configure peer (server)
-	publicKeyHex, err := keyToHex(c.config.Server.PublicKey)
+	publicKeyHex, err := keyToHex(wgConfig.PublicKey)
 	if err != nil {
 		return "", fmt.Errorf("failed to encode public_key: %w", err)
 	}
 	config.WriteString(fmt.Sprintf("public_key=%s\n", publicKeyHex))
-	config.WriteString(fmt.Sprintf("endpoint=%s\n", c.config.Server.Endpoint))
+	config.WriteString(fmt.Sprintf("endpoint=%s\n", c.config.resolvedEndpoint))
 
 	// Set preshared key if provided
-	if c.config.Server.PresharedKey != "" {
-		presharedKeyHex, err := keyToHex(c.config.Server.PresharedKey)
+	if wgConfig.PresharedKey != "" {
+		presharedKeyHex, err := keyToHex(wgConfig.PresharedKey)
 		if err != nil {
 			return "", fmt.Errorf("failed to encode preshared_key: %w", err)
 		}
@@ -117,12 +119,12 @@ func (c *Client) buildIPCConfig() (string, error) {
 	}
 
 	// Set persistent keepalive if provided
-	if c.config.Server.PersistentKeepalive > 0 {
-		config.WriteString(fmt.Sprintf("persistent_keepalive_interval=%d\n", c.config.Server.PersistentKeepalive))
+	if wgConfig.PersistentKeepalive > 0 {
+		config.WriteString(fmt.Sprintf("persistent_keepalive_interval=%d\n", wgConfig.PersistentKeepalive))
 	}
 
 	// Set allowed IPs
-	for _, allowedIP := range c.config.Server.AllowedIPs {
+	for _, allowedIP := range wgConfig.AllowedIPs {
 		config.WriteString(fmt.Sprintf("allowed_ip=%s\n", allowedIP))
 	}
 

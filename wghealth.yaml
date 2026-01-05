@@ -1,22 +1,7 @@
-# WireGuard Client Configuration Example
+# WireGuard Health Check Configuration
 
-# Client settings
-private_key: "EGVgjKmPmMQg8tqjhnVyikTNZBD2sQnUCZuADWHgpGY="
-address: "10.0.0.8/24"  # Client's VPN IP address
-dns:
-  - "8.8.8.8"
-  - "8.8.4.4"
-mtu: 1420  # Optional, defaults to 1420
-
-# Server settings
-server:
-  public_key: "oBw3ponSgiaK9waiwfNJXfJaFoJFMKO4IAreMQI8wAU="
-  endpoint: "wireguard.wan.salzmann.berlin:51820"  # Server IP:port
-  allowed_ips:
-    - "0.0.0.0/0"  # Route all traffic through VPN
-    # - "10.0.0.0/24"  # Or only specific networks
-  preshared_key: ""  # Optional pre-shared key for additional security
-  persistent_keepalive: 25  # Optional, send keepalive every N seconds
+# Path to WireGuard configuration file (standard .conf format)
+wireguard_config_path: "/tmp/wghealth.conf"
 
 # Ping test configuration
 ping:
