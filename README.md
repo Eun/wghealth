@@ -1,6 +1,6 @@
-# WireGuard Client
+# WireGuard Health Check
 
-A standalone WireGuard client that connects to a single WireGuard server, performs a ping test, and exits. This client does **not** require root privileges or TUN/TAP devices as it uses a userspace network stack.
+A standalone WireGuard client that connects to a single WireGuard server, performs a health check.
 
 ## Features
 
@@ -11,112 +11,170 @@ A standalone WireGuard client that connects to a single WireGuard server, perfor
 - ✅ Automatic connection establishment
 - ✅ Built-in ping test functionality
 - ✅ Clean exit codes (0 for success, 1 for failure)
+- ✅ Optional server mode to expose health check via HTTP
 
 ## Building
 
 ```bash
-cd cmd/wgclient
-go build -o wgclient
+cd cmd/wghealth
+go build -o wghealth
 ```
 
 ## Configuration
 
 Create a YAML configuration file (see `example.config.yaml`):
 
-```yaml
-# Client settings
-private_key: "YourBase64EncodedPrivateKeyHere=="
-address: "10.0.0.2/24"
-dns:
-  - "8.8.8.8"
-
-# Server settings
-server:
-  public_key: "ServerPublicKeyBase64Here=="
-  endpoint: "vpn.example.com:51820"
-  allowed_ips:
-    - "0.0.0.0/0"
-  persistent_keepalive: 25
-
-# Ping test
-ping:
-  target: "8.8.8.8"
-  timeout: 10
-  count: 4
-```
-
-### Configuration Options
-
-#### Client Settings
-- `private_key`: Your WireGuard private key (base64 encoded, 32 bytes)
-- `address`: Your VPN IP address (can be CIDR or plain IP)
-- `dns`: List of DNS server IP addresses (optional)
-- `mtu`: Maximum transmission unit (optional, default: 1420)
-
-#### Server Settings
-- `public_key`: Server's WireGuard public key (base64 encoded)
-- `endpoint`: Server address in format `ip:port` or `hostname:port`
-- `allowed_ips`: List of IP ranges to route through the VPN
-- `preshared_key`: Optional pre-shared key for additional security
-- `persistent_keepalive`: Send keepalive packets every N seconds (optional)
-
-#### Ping Settings
-- `target`: IP address or hostname to ping (required)
-- `timeout`: Timeout in seconds (default: 10)
-- `count`: Number of ping attempts (default: 1)
-
 ## Usage
 
 ```bash
-# Use default config file (wgclient.yaml)
-./wgclient
+# Use default config file (wghealth.yaml)
+./wghealth
 
 # Specify custom config file
-./wgclient -config /path/to/config.yaml
+./wghealth -config=/path/to/config.yaml
+
+# Server Mode (start a http server that does the health check on demand query /check)
+./wghealth -server-mode -server-address=:8000 -server-keep-alive=false -config=/path/to/config.yaml
 ```
 
-## Exit Codes
+## Exit Codes (in non-server mode)
+- `0`: Success - connection established and checkCGO_ successful
+- `1`: Failure - connection failed or check failed
 
-- `0`: Success - connection established and ping successful
-- `1`: Failure - connection failed or ping failed
+## Responses (in server mode)
 
-## Key Generation
+### Health Check Success Response
+Status Code: `200 OK`
+```json
+{
+   "status": "health check succeeded",
+   "request_id": "ea7de933-8c47-4073-be6c-d3abdf59deff",
+   "duration_ms": 3587,
+   "timestamp": "2024-06-10T12:34:56Z"
+}
+```
 
-To generate WireGuard keys:
+### Health Check Failure Response
+Status Code: `503 Service Unavailable`
+```json
+{
+   "status": "health check failed",
+   "request_id": "f1dae7ac-9c3d-4357-bfaa-fa171950e3b4",
+   "duration_ms": 3569,
+   "timestamp": "2024-06-10T12:34:56Z"
+}
+```
+
+
+## Systemd Service Setup
+
+To run wghealth in server mode as a systemd service:
+
+### 1. Create the systemd service file
+
+Create `/etc/systemd/system/wghealth.service`:
+
+```ini
+[Unit]
+Description=WireGuard Health Check Server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=wghealth
+Group=wghealth
+WorkingDirectory=/opt/wghealth
+ExecStart=/opt/wghealth/wghealth -server-mode -server-address=:8080 -server-keep-alive=false -config=/opt/wghealth/wghealth.yaml
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+# Security hardening
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/wghealth
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictRealtime=true
+RestrictNamespaces=true
+
+[Install]
+WantedBy=multi-user.target
+```
+
+### 2. Setup steps
 
 ```bash
-# Generate private key
-wg genkey
+# Create a dedicated user for the service
+sudo useradd -r -s /bin/false -d /opt/wghealth wghealth
 
-# Generate public key from private key
-echo "PRIVATE_KEY_HERE" | wg pubkey
+# Create the installation directory
+sudo mkdir -p /opt/wghealth
+
+# Copy the binary and configuration
+sudo cp cmd/wghealth/wghealth /opt/wghealth/
+sudo cp wghealth.yaml /opt/wghealth/
+sudo cp example.wireguard.conf /opt/wghealth/wireguard.conf
+
+# Set ownership
+sudo chown -R wghealth:wghealth /opt/wghealth
+
+# Reload systemd
+sudo systemctl daemon-reload
+
+# Enable and start the service
+sudo systemctl enable wghealth
+sudo systemctl start wghealth
+
+# Check the status
+sudo systemctl status wghealth
 ```
 
-Or use the WireGuard tools from the main package.
+### 3. View logs
 
-## Architecture
+```bash
+# Follow logs in real-time
+sudo journalctl -u wghealth -f
 
-This client uses the following components from wireguard-go:
+# View recent logs
+sudo journalctl -u wghealth -n 100
 
-- `tun/netstack`: Userspace network stack (no kernel TUN/TAP needed)
-- `device`: WireGuard protocol implementation
-- `conn`: UDP connection handling
+# View logs with JSON formatting
+sudo journalctl -u wghealth -o json-pretty
+```
 
-The netstack package provides a full TCP/IP stack in userspace using gVisor's netstack, which allows network operations without requiring privileged access to create virtual network interfaces.
+### 4. Service management
 
-## Example Workflow
+```bash
+# Stop the service
+sudo systemctl stop wghealth
 
-1. Configure your client with valid WireGuard keys and server details
-2. Run the client: `./wgclient -config myconfig.yaml`
-3. The client will:
-   - Load and validate configuration
-   - Create a userspace network stack
-   - Establish WireGuard connection to the server
-   - Perform the configured ping test
-   - Exit with code 0 (success) or 1 (failure)
+# Restart the service
+sudo systemctl restart wghealth
 
-## Limitations
+# Disable the service
+sudo systemctl disable wghealth
 
-- This is a one-off client, not a persistent daemon
-- Only supports connection to a single WireGuard peer (server)
-- Requires the target server to allow your public key
+# Reload configuration (after editing the service file)
+sudo systemctl daemon-reload
+sudo systemctl restart wghealth
+```
+
+### 5. Configuration options
+
+You can customize the service by editing `/etc/systemd/system/wghealth.service`:
+
+- **Change listening port**: Modify `-server-address=:8080` to your desired port
+- **Enable keep-alive**: Change `-server-keep-alive=false` to `true` to maintain persistent WireGuard connection
+- **Change config location**: Modify `-config=/opt/wghealth/wghealth.yaml` to your config path
+- **Adjust restart behavior**: Modify `RestartSec=10` to change the restart delay
+
+After any changes, run:
+```bash
+sudo systemctl daemon-reload
+sudo systemctl restart wghealth
+```

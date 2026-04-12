@@ -1,8 +1,3 @@
-/* SPDX-License-Identifier: MIT
- *
- * Copyright (C) 2017-2025 WireGuard LLC. All Rights Reserved.
- */
-
 package wghealth
 
 import (
@@ -30,7 +25,7 @@ import (
 
 // Client represents a WireGuard client instance
 type Client struct {
-	config *Config
+	Config *Config
 	device *device.Device
 	tun    *netstack.Net
 }
@@ -38,26 +33,26 @@ type Client struct {
 // NewClient creates a new WireGuard client from configuration
 func NewClient(config *Config) (*Client, error) {
 	return &Client{
-		config: config,
+		Config: config,
 	}, nil
 }
 
 // Connect establishes the WireGuard connection
 func (c *Client) Connect() error {
 	// Parse client address
-	clientAddr, err := c.config.GetClientAddress()
+	clientAddr, err := c.Config.GetClientAddress()
 	if err != nil {
 		return fmt.Errorf("failed to parse client address: %w", err)
 	}
 
 	// Parse DNS servers
-	dnsServers, err := c.config.GetDNSServers()
+	dnsServers, err := c.Config.GetDNSServers()
 	if err != nil {
 		return fmt.Errorf("failed to parse DNS servers: %w", err)
 	}
 
 	// Create netstack TUN device (userspace network stack, no root required)
-	wgConfig := c.config.GetWireGuardConfig()
+	wgConfig := c.Config.GetWireGuardConfig()
 	tunDevice, tnet, err := netstack.CreateNetTUN(
 		[]netip.Addr{clientAddr},
 		dnsServers,
@@ -96,7 +91,7 @@ func (c *Client) Connect() error {
 // buildIPCConfig creates the IPC configuration string for the WireGuard device
 func (c *Client) buildIPCConfig() (string, error) {
 	var config strings.Builder
-	wgConfig := c.config.GetWireGuardConfig()
+	wgConfig := c.Config.GetWireGuardConfig()
 
 	// Set private key (must be hex-encoded for IPC)
 	privateKeyHex, err := keyToHex(wgConfig.PrivateKey)
@@ -111,7 +106,7 @@ func (c *Client) buildIPCConfig() (string, error) {
 		return "", fmt.Errorf("failed to encode public_key: %w", err)
 	}
 	config.WriteString(fmt.Sprintf("public_key=%s\n", publicKeyHex))
-	config.WriteString(fmt.Sprintf("endpoint=%s\n", c.config.resolvedEndpoint))
+	config.WriteString(fmt.Sprintf("endpoint=%s\n", c.Config.resolvedEndpoint))
 
 	// Set preshared key if provided
 	if wgConfig.PresharedKey != "" {
@@ -147,14 +142,14 @@ func keyToHex(key string) (string, error) {
 }
 
 // Ping sends ICMP ping packets to the target and returns success/failure
-func (c *Client) Ping() error {
+func (c *Client) Ping(ctx context.Context) error {
 	if c.tun == nil {
 		return fmt.Errorf("client not connected")
 	}
 
-	target := c.config.Ping.Target
-	timeout := time.Duration(c.config.Ping.Timeout) * time.Second
-	count := c.config.Ping.Count
+	target := c.Config.Ping.Target
+	timeout := time.Duration(c.Config.Ping.Timeout) * time.Second
+	count := c.Config.Ping.Count
 
 	// Determine if target is IPv4 or IPv6
 	targetAddr, err := c.resolveTarget(target)
@@ -243,7 +238,7 @@ func (c *Client) Ping() error {
 		}
 
 		// Success
-		log.Info().
+		log.Ctx(ctx).Info().
 			Str("target", targetAddr.String()).
 			Int("seq", i).
 			Dur("latency", latency).
@@ -263,7 +258,7 @@ func (c *Client) Ping() error {
 		return fmt.Errorf("all pings failed")
 	}
 
-	log.Info().
+	log.Ctx(ctx).Info().
 		Int("successful", successCount).
 		Int("total", count).
 		Msg("Ping statistics")
@@ -300,12 +295,12 @@ func (c *Client) resolveTarget(target string) (netip.Addr, error) {
 }
 
 // HTTPCheck performs an HTTP health check
-func (c *Client) HTTPCheck() error {
+func (c *Client) HTTPCheck(ctx context.Context) error {
 	if c.tun == nil {
 		return fmt.Errorf("client not connected")
 	}
 
-	httpConfig := c.config.HTTP
+	httpConfig := c.Config.HTTP
 	timeout := time.Duration(httpConfig.Timeout) * time.Second
 
 	// Create HTTP client using the netstack dialer
@@ -317,10 +312,12 @@ func (c *Client) HTTPCheck() error {
 	}
 
 	// Create request
-	req, err := http.NewRequest(httpConfig.Method, httpConfig.URL, nil)
+	req, err := http.NewRequestWithContext(ctx, httpConfig.Method, httpConfig.URL, nil)
 	if err != nil {
 		return fmt.Errorf("failed to create HTTP request: %w", err)
 	}
+
+	req.Header.Set("User-Agent", "wghealth/1.0")
 
 	// Perform request
 	start := time.Now()
@@ -342,9 +339,9 @@ func (c *Client) HTTPCheck() error {
 			break
 		}
 	}
-	
+
 	if !statusOK {
-		log.Error().
+		log.Ctx(ctx).Error().
 			Int("status_code", resp.StatusCode).
 			Str("status", resp.Status).
 			Ints("expected_codes", httpConfig.ExpectedStatusCodes).
@@ -353,7 +350,7 @@ func (c *Client) HTTPCheck() error {
 		return fmt.Errorf("HTTP request returned unexpected status: got %d, expected one of %v", resp.StatusCode, httpConfig.ExpectedStatusCodes)
 	}
 
-	log.Info().
+	log.Ctx(ctx).Info().
 		Int("status_code", resp.StatusCode).
 		Str("status", resp.Status).
 		Dur("latency", latency).
@@ -363,12 +360,12 @@ func (c *Client) HTTPCheck() error {
 }
 
 // HTTPSCheck performs an HTTPS health check
-func (c *Client) HTTPSCheck() error {
+func (c *Client) HTTPSCheck(ctx context.Context) error {
 	if c.tun == nil {
 		return fmt.Errorf("client not connected")
 	}
 
-	httpsConfig := c.config.HTTPS
+	httpsConfig := c.Config.HTTPS
 	timeout := time.Duration(httpsConfig.Timeout) * time.Second
 
 	// Create HTTPS client using the netstack dialer
@@ -379,16 +376,18 @@ func (c *Client) HTTPSCheck() error {
 	httpClient := &http.Client{
 		Timeout: timeout,
 		Transport: &http.Transport{
-			DialContext: c.tun.DialContext,
+			DialContext:     c.tun.DialContext,
 			TLSClientConfig: tlsConfig,
 		},
 	}
 
 	// Create request
-	req, err := http.NewRequest(httpsConfig.Method, httpsConfig.URL, nil)
+	req, err := http.NewRequestWithContext(ctx, httpsConfig.Method, httpsConfig.URL, nil)
 	if err != nil {
 		return fmt.Errorf("failed to create HTTPS request: %w", err)
 	}
+
+	req.Header.Set("User-Agent", "wghealth/1.0")
 
 	// Perform request
 	start := time.Now()
@@ -410,9 +409,9 @@ func (c *Client) HTTPSCheck() error {
 			break
 		}
 	}
-	
+
 	if !statusOK {
-		log.Error().
+		log.Ctx(ctx).Error().
 			Int("status_code", resp.StatusCode).
 			Str("status", resp.Status).
 			Ints("expected_codes", httpsConfig.ExpectedStatusCodes).
@@ -421,7 +420,7 @@ func (c *Client) HTTPSCheck() error {
 		return fmt.Errorf("HTTPS request returned unexpected status: got %d, expected one of %v", resp.StatusCode, httpsConfig.ExpectedStatusCodes)
 	}
 
-	log.Info().
+	log.Ctx(ctx).Info().
 		Int("status_code", resp.StatusCode).
 		Str("status", resp.Status).
 		Dur("latency", latency).
@@ -438,4 +437,8 @@ func (c *Client) Close() error {
 		<-c.device.Wait()
 	}
 	return nil
+}
+
+func (c *Client) Connected() bool {
+	return c.device != nil
 }
