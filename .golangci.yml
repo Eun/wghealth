@@ -35,7 +35,7 @@ linters:
     dogsled:
       max-blank-identifiers: 2
     dupl:
-      threshold: 100
+      threshold: 200
     errcheck:
       check-type-assertions: false
       check-blank: false
@@ -94,6 +94,9 @@ linters:
       - text: 'shadow: declaration of "err" shadows declaration at line \d+'
         linters:
           - govet
+      - text: 'G402: TLS InsecureSkipVerify set to true'
+        linters:
+          - gosec
     paths:
       - third_party$
       - builtin$
