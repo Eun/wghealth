@@ -1,0 +1,5 @@
+/dist
+/.idea
+/.vscode
+/wghealth
+coverage.out
