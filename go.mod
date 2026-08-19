@@ -5,7 +5,7 @@ go 1.24.0
 toolchain go1.24.4
 
 require (
-	github.com/google/uuid v1.3.1
+	github.com/google/uuid v1.6.0
 	github.com/rs/zerolog v1.34.0
 	golang.org/x/net v0.48.0
 	golang.zx2c4.com/wireguard v0.0.0-20250521234502-f333402bd9cb
