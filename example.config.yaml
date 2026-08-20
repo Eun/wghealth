@@ -1,33 +1,69 @@
 # WireGuard Health Check Configuration
 
-# Path to WireGuard configuration file (standard .conf format)
-wireguard_config_path: "example.wireguard.conf"
+- name: check1
+  endpoint: /check1
+  # Path to WireGuard configuration file (standard .conf format)
+  wireguard_config_path: "example.wireguard.conf"
 
-# Health Check Configuration
-# NOTE: Only ONE of the following health checks should be configured at a time
+  # Health Check Configuration
+  # NOTE: Only ONE of the following health checks should be configured at a time
 
-# Option 1: ICMP Ping test
-ping:
-  target: "8.8.8.8"  # IP or hostname to ping
-  timeout: 10        # Timeout in seconds (default: 10)
-  count: 4           # Number of pings (default: 1)
+  # Option 1: ICMP Ping test
+  ping:
+    target: "8.8.8.8"  # IP or hostname to ping
+    timeout: 10        # Timeout in seconds (default: 10)
+    count: 4           # Number of pings (default: 1)
 
-# Option 2: HTTP health check
-# Uncomment to use HTTP instead of ping
-#http:
-#  url: "http://example.com/health"   # HTTP URL to check
-#  timeout: 10                         # Timeout in seconds (default: 10)
-#  method: "GET"                       # HTTP method (default: GET)
-#  expected_status_codes: [200]        # Expected HTTP status codes (default: [200])
-#                                      # Can specify multiple codes: [200, 201, 204]
+  # Option 2: HTTP health check
+  # Uncomment to use HTTP instead of ping
+  #http:
+  #  url: "http://example.com/health"   # HTTP URL to check
+  #  timeout: 10                         # Timeout in seconds (default: 10)
+  #  method: "GET"                       # HTTP method (default: GET)
+  #  expected_status_codes: [200]        # Expected HTTP status codes (default: [200])
+  #                                      # Can specify multiple codes: [200, 201, 204]
 
-# Option 3: HTTPS health check
-# Uncomment to use HTTPS instead of ping
-#https:
-#  url: "https://example.com/health"  # HTTPS URL to check
-#  timeout: 10                         # Timeout in seconds (default: 10)
-#  method: "GET"                       # HTTP method (default: GET)
-#  expected_status_codes: [200]        # Expected HTTP status codes (default: [200])
-#                                      # Can specify multiple codes: [200, 201, 204]
-#  insecure_skip_verify: false         # Skip certificate verification (default: false)
-#                                      # Set to true for self-signed certificates
+  # Option 3: HTTPS health check
+  # Uncomment to use HTTPS instead of ping
+  #https:
+  #  url: "https://example.com/health"  # HTTPS URL to check
+  #  timeout: 10                         # Timeout in seconds (default: 10)
+  #  method: "GET"                       # HTTP method (default: GET)
+  #  expected_status_codes: [200]        # Expected HTTP status codes (default: [200])
+  #                                      # Can specify multiple codes: [200, 201, 204]
+  #  insecure_skip_verify: false         # Skip certificate verification (default: false)
+  #                                      # Set to true for self-signed certificates
+
+- name: check2
+  # endpoint is omitted — the HTTP path will default to /check2
+  # Path to WireGuard configuration file (standard .conf format)
+  wireguard_config_path: "example.wireguard.conf"
+
+  # Health Check Configuration
+  # NOTE: Only ONE of the following health checks should be configured at a time
+
+  # Option 1: ICMP Ping test
+  ping:
+    target: "8.8.8.8"  # IP or hostname to ping
+    timeout: 10        # Timeout in seconds (default: 10)
+    count: 4           # Number of pings (default: 1)
+
+  # Option 2: HTTP health check
+  # Uncomment to use HTTP instead of ping
+  #http:
+  #  url: "http://example.com/health"   # HTTP URL to check
+  #  timeout: 10                         # Timeout in seconds (default: 10)
+  #  method: "GET"                       # HTTP method (default: GET)
+  #  expected_status_codes: [200]        # Expected HTTP status codes (default: [200])
+  #                                      # Can specify multiple codes: [200, 201, 204]
+
+  # Option 3: HTTPS health check
+  # Uncomment to use HTTPS instead of ping
+  #https:
+  #  url: "https://example.com/health"  # HTTPS URL to check
+  #  timeout: 10                         # Timeout in seconds (default: 10)
+  #  method: "GET"                       # HTTP method (default: GET)
+  #  expected_status_codes: [200]        # Expected HTTP status codes (default: [200])
+  #                                      # Can specify multiple codes: [200, 201, 204]
+  #  insecure_skip_verify: false         # Skip certificate verification (default: false)
+  #                                      # Set to true for self-signed certificates

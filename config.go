@@ -7,6 +7,7 @@ package wghealth
 
 import (
 	"bufio"
+	"context"
 	"encoding/base64"
 	"encoding/hex"
 	"fmt"
@@ -18,8 +19,15 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// Config represents the application configuration
-type Config struct {
+// CheckConfig represents a single named health check entry with its own
+// WireGuard configuration, endpoint path, and health-check settings.
+type CheckConfig struct {
+	// Name is a unique identifier for this check.
+	Name string `yaml:"name"`
+
+	// Endpoint is the HTTP path for server mode. Defaults to /<Name> when empty.
+	Endpoint string `yaml:"endpoint,omitempty"`
+
 	// Path to WireGuard configuration file
 	WireGuardConfigPath string `yaml:"wireguard_config_path"`
 
@@ -34,7 +42,16 @@ type Config struct {
 	resolvedEndpoint string
 }
 
-// WireGuardConfig represents parsed WireGuard settings
+// GetEndpoint returns the HTTP path for this check. When Endpoint is not
+// set in the config, the name is used as the path (prefixed with "/").
+func (c *CheckConfig) GetEndpoint() string {
+	if c.Endpoint != "" {
+		return c.Endpoint
+	}
+	return "/" + c.Name
+}
+
+// WireGuardConfig represents parsed WireGuard settings.
 type WireGuardConfig struct {
 	PrivateKey          string
 	Address             string
@@ -47,100 +64,134 @@ type WireGuardConfig struct {
 	PersistentKeepalive int
 }
 
-// PingConfig represents the ping test configuration
+// PingConfig represents the ping test configuration.
 type PingConfig struct {
 	Target  string `yaml:"target"`
 	Timeout int    `yaml:"timeout,omitempty"` // in seconds
 	Count   int    `yaml:"count,omitempty"`
 }
 
-// HTTPConfig represents the HTTP health check configuration
+// HTTPConfig represents the HTTP health check configuration.
 type HTTPConfig struct {
 	URL                 string `yaml:"url"`
-	Timeout             int    `yaml:"timeout,omitempty"`                 // in seconds
-	Method              string `yaml:"method,omitempty"`                  // default: GET
-	ExpectedStatusCodes []int  `yaml:"expected_status_codes,omitempty"`   // expected HTTP status codes (default: [200])
+	Timeout             int    `yaml:"timeout,omitempty"`               // in seconds
+	Method              string `yaml:"method,omitempty"`                // default: GET
+	ExpectedStatusCodes []int  `yaml:"expected_status_codes,omitempty"` // expected HTTP status codes (default: [200])
 }
 
-// HTTPSConfig represents the HTTPS health check configuration
+// HTTPSConfig represents the HTTPS health check configuration.
 type HTTPSConfig struct {
 	URL                 string `yaml:"url"`
-	Timeout             int    `yaml:"timeout,omitempty"`                 // in seconds
-	Method              string `yaml:"method,omitempty"`                  // default: GET
-	InsecureSkipVerify  bool   `yaml:"insecure_skip_verify,omitempty"`    // skip certificate verification
-	ExpectedStatusCodes []int  `yaml:"expected_status_codes,omitempty"`   // expected HTTP status codes (default: [200])
+	Timeout             int    `yaml:"timeout,omitempty"`               // in seconds
+	Method              string `yaml:"method,omitempty"`                // default: GET
+	InsecureSkipVerify  bool   `yaml:"insecure_skip_verify,omitempty"`  // skip certificate verification
+	ExpectedStatusCodes []int  `yaml:"expected_status_codes,omitempty"` // expected HTTP status codes (default: [200])
 }
 
-// LoadConfig loads configuration from a YAML file
-func LoadConfig(path string) (*Config, error) {
+// LoadConfig loads a list of CheckConfig entries from a YAML file.
+// The file must contain a YAML sequence (list) of check objects.
+func LoadConfig(path string) ([]*CheckConfig, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read config file: %w", err)
 	}
 
-	var config Config
-	if err := yaml.Unmarshal(data, &config); err != nil {
+	var checks []*CheckConfig
+	if err := yaml.Unmarshal(data, &checks); err != nil {
 		return nil, fmt.Errorf("failed to parse config file: %w", err)
 	}
 
-	// Set health check defaults
-	if config.Ping != nil {
-		if config.Ping.Timeout == 0 {
-			config.Ping.Timeout = 10
+	if len(checks) == 0 {
+		return nil, fmt.Errorf("config must contain at least one check")
+	}
+
+	seenNames := make(map[string]struct{})
+	seenEndpoints := make(map[string]struct{})
+
+	for i, check := range checks {
+		if err := initCheckConfig(check); err != nil {
+			return nil, fmt.Errorf("check[%d] %q: %w", i, check.Name, err)
 		}
-		if config.Ping.Count == 0 {
-			config.Ping.Count = 1
+
+		if _, dup := seenNames[check.Name]; dup {
+			return nil, fmt.Errorf("check[%d]: duplicate name %q", i, check.Name)
+		}
+		seenNames[check.Name] = struct{}{}
+
+		ep := check.GetEndpoint()
+		if _, dup := seenEndpoints[ep]; dup {
+			return nil, fmt.Errorf("check[%d] %q: duplicate endpoint %q", i, check.Name, ep)
+		}
+		seenEndpoints[ep] = struct{}{}
+	}
+
+	return checks, nil
+}
+
+// initCheckConfig applies defaults, loads the WireGuard config file, and
+// validates a single CheckConfig.
+func initCheckConfig(c *CheckConfig) error {
+	if c.Name == "" {
+		return fmt.Errorf("name is required")
+	}
+
+	// Apply health-check defaults
+	if c.Ping != nil {
+		if c.Ping.Timeout == 0 {
+			c.Ping.Timeout = 10
+		}
+		if c.Ping.Count == 0 {
+			c.Ping.Count = 1
 		}
 	}
-	if config.HTTP != nil {
-		if config.HTTP.Timeout == 0 {
-			config.HTTP.Timeout = 10
+	if c.HTTP != nil {
+		if c.HTTP.Timeout == 0 {
+			c.HTTP.Timeout = 10
 		}
-		if config.HTTP.Method == "" {
-			config.HTTP.Method = "GET"
+		if c.HTTP.Method == "" {
+			c.HTTP.Method = "GET"
 		}
-		if len(config.HTTP.ExpectedStatusCodes) == 0 {
-			config.HTTP.ExpectedStatusCodes = []int{200}
+		if len(c.HTTP.ExpectedStatusCodes) == 0 {
+			c.HTTP.ExpectedStatusCodes = []int{200}
 		}
 	}
-	if config.HTTPS != nil {
-		if config.HTTPS.Timeout == 0 {
-			config.HTTPS.Timeout = 10
+	if c.HTTPS != nil {
+		if c.HTTPS.Timeout == 0 {
+			c.HTTPS.Timeout = 10
 		}
-		if config.HTTPS.Method == "" {
-			config.HTTPS.Method = "GET"
+		if c.HTTPS.Method == "" {
+			c.HTTPS.Method = "GET"
 		}
-		if len(config.HTTPS.ExpectedStatusCodes) == 0 {
-			config.HTTPS.ExpectedStatusCodes = []int{200}
+		if len(c.HTTPS.ExpectedStatusCodes) == 0 {
+			c.HTTPS.ExpectedStatusCodes = []int{200}
 		}
 	}
 
 	// Load and parse WireGuard configuration file
-	wgConfigData, err := os.ReadFile(config.WireGuardConfigPath)
+	wgConfigData, err := os.ReadFile(c.WireGuardConfigPath)
 	if err != nil {
-		return nil, fmt.Errorf("failed to read wireguard config file: %w", err)
+		return fmt.Errorf("failed to read wireguard config file: %w", err)
 	}
 
 	wgConfig, err := parseWireGuardConfig(string(wgConfigData))
 	if err != nil {
-		return nil, fmt.Errorf("failed to parse wireguard config: %w", err)
+		return fmt.Errorf("failed to parse wireguard config: %w", err)
 	}
-	config.parsedWG = wgConfig
+	c.parsedWG = wgConfig
 
 	// Set WireGuard defaults
-	if config.parsedWG.MTU == 0 {
-		config.parsedWG.MTU = 1420
+	if c.parsedWG.MTU == 0 {
+		c.parsedWG.MTU = 1420
 	}
 
-	// Validate configuration
-	if err := config.Validate(); err != nil {
-		return nil, fmt.Errorf("invalid configuration: %w", err)
+	if err := c.Validate(); err != nil {
+		return fmt.Errorf("invalid configuration: %w", err)
 	}
 
-	return &config, nil
+	return nil
 }
 
-// parseWireGuardConfig parses the WireGuard INI-style configuration
+// parseWireGuardConfig parses the WireGuard INI-style configuration.
 func parseWireGuardConfig(configStr string) (*WireGuardConfig, error) {
 	config := &WireGuardConfig{}
 	scanner := bufio.NewScanner(strings.NewReader(configStr))
@@ -183,7 +234,7 @@ func parseWireGuardConfig(configStr string) (*WireGuardConfig, error) {
 					config.DNS[i] = strings.TrimSpace(config.DNS[i])
 				}
 			case "mtu":
-				fmt.Sscanf(value, "%d", &config.MTU)
+				_, _ = fmt.Sscanf(value, "%d", &config.MTU)
 			}
 		case "peer":
 			switch strings.ToLower(key) {
@@ -199,7 +250,7 @@ func parseWireGuardConfig(configStr string) (*WireGuardConfig, error) {
 			case "presharedkey":
 				config.PresharedKey = value
 			case "persistentkeepalive":
-				fmt.Sscanf(value, "%d", &config.PersistentKeepalive)
+				_, _ = fmt.Sscanf(value, "%d", &config.PersistentKeepalive)
 			}
 		}
 	}
@@ -211,8 +262,19 @@ func parseWireGuardConfig(configStr string) (*WireGuardConfig, error) {
 	return config, nil
 }
 
-// Validate checks if the configuration is valid
-func (c *Config) Validate() error {
+// Validate checks if the CheckConfig is valid.
+func (c *CheckConfig) Validate() error {
+	if err := c.validateWireGuard(); err != nil {
+		return err
+	}
+	if err := c.validateHealthChecks(); err != nil {
+		return err
+	}
+	return nil
+}
+
+// validateWireGuard validates the WireGuard-specific fields and resolves the endpoint.
+func (c *CheckConfig) validateWireGuard() error {
 	if c.parsedWG.PrivateKey == "" {
 		return fmt.Errorf("private_key is required")
 	}
@@ -240,16 +302,8 @@ func (c *Config) Validate() error {
 	if c.parsedWG.Endpoint == "" {
 		return fmt.Errorf("server.endpoint is required")
 	}
-
-	c.resolvedEndpoint = c.parsedWG.Endpoint
-	// resolve s.Server.Endpoint if it is a hostname
-	host, port, _ := net.SplitHostPort(c.resolvedEndpoint)
-	if net.ParseIP(host) == nil {
-		addrs, err := net.LookupHost(host)
-		if err != nil || len(addrs) == 0 {
-			return fmt.Errorf("unable to resolve server.endpoint hostname: %w", err)
-		}
-		c.resolvedEndpoint = net.JoinHostPort(addrs[0], port)
+	if err := c.resolveEndpoint(); err != nil {
+		return err
 	}
 
 	if len(c.parsedWG.AllowedIPs) == 0 {
@@ -266,8 +320,26 @@ func (c *Config) Validate() error {
 			return fmt.Errorf("invalid server.preshared_key: %w", err)
 		}
 	}
+	return nil
+}
 
-	// Validate that exactly one health check is configured
+// resolveEndpoint resolves the endpoint hostname to an IP address if needed.
+func (c *CheckConfig) resolveEndpoint() error {
+	c.resolvedEndpoint = c.parsedWG.Endpoint
+	host, port, _ := net.SplitHostPort(c.resolvedEndpoint)
+	if net.ParseIP(host) == nil {
+		var resolver net.Resolver
+		addrs, err := resolver.LookupHost(context.Background(), host)
+		if err != nil || len(addrs) == 0 {
+			return fmt.Errorf("unable to resolve server.endpoint hostname: %w", err)
+		}
+		c.resolvedEndpoint = net.JoinHostPort(addrs[0], port)
+	}
+	return nil
+}
+
+// validateHealthChecks validates that exactly one health check is configured.
+func (c *CheckConfig) validateHealthChecks() error {
 	checksConfigured := 0
 	if c.Ping != nil {
 		checksConfigured++
@@ -287,18 +359,16 @@ func (c *Config) Validate() error {
 			return fmt.Errorf("https.url is required")
 		}
 	}
-
 	if checksConfigured == 0 {
 		return fmt.Errorf("at least one health check (ping, http, or https) must be configured")
 	}
 	if checksConfigured > 1 {
 		return fmt.Errorf("only one health check type can be configured at a time")
 	}
-
 	return nil
 }
 
-// decodeKey decodes a base64 or hex encoded key
+// decodeKey decodes a base64 or hex encoded key.
 func decodeKey(key string) ([]byte, error) {
 	key = strings.TrimSpace(key)
 
@@ -315,8 +385,8 @@ func decodeKey(key string) ([]byte, error) {
 	return nil, fmt.Errorf("key must be 32 bytes encoded as base64 or hex")
 }
 
-// GetClientAddress returns the parsed client address
-func (c *Config) GetClientAddress() (netip.Addr, error) {
+// GetClientAddress returns the parsed client address.
+func (c *CheckConfig) GetClientAddress() (netip.Addr, error) {
 	// Try parsing as prefix first
 	if prefix, err := netip.ParsePrefix(c.parsedWG.Address); err == nil {
 		return prefix.Addr(), nil
@@ -325,8 +395,8 @@ func (c *Config) GetClientAddress() (netip.Addr, error) {
 	return netip.ParseAddr(c.parsedWG.Address)
 }
 
-// GetDNSServers returns parsed DNS server addresses
-func (c *Config) GetDNSServers() ([]netip.Addr, error) {
+// GetDNSServers returns parsed DNS server addresses.
+func (c *CheckConfig) GetDNSServers() ([]netip.Addr, error) {
 	if len(c.parsedWG.DNS) == 0 {
 		return nil, nil
 	}
@@ -342,7 +412,7 @@ func (c *Config) GetDNSServers() ([]netip.Addr, error) {
 	return servers, nil
 }
 
-// GetWireGuardConfig returns the parsed WireGuard configuration
-func (c *Config) GetWireGuardConfig() *WireGuardConfig {
+// GetWireGuardConfig returns the parsed WireGuard configuration.
+func (c *CheckConfig) GetWireGuardConfig() *WireGuardConfig {
 	return c.parsedWG
 }
