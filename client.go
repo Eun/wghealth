@@ -25,13 +25,13 @@ import (
 
 // Client represents a WireGuard client instance.
 type Client struct {
-	Config *Config
+	Config *CheckConfig
 	device *device.Device
 	tun    *netstack.Net
 }
 
 // NewClient creates a new WireGuard client from configuration.
-func NewClient(config *Config) (*Client, error) {
+func NewClient(config *CheckConfig) (*Client, error) {
 	return &Client{
 		Config: config,
 	}, nil
