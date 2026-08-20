@@ -84,9 +84,8 @@ docker_manifests:
     image_templates:
       - "{{.Env.REGISTRY}}/{{.Env.IMAGE_NAME}}:{{.Version}}-amd64"
       - "{{.Env.REGISTRY}}/{{.Env.IMAGE_NAME}}:{{.Version}}-arm64"
-  
-  
--†  name_template: "{{.Env.REGISTRY}}/{{.Env.IMAGE_NAME}}:{{.Version}}"
+  -
+    name_template: "{{.Env.REGISTRY}}/{{.Env.IMAGE_NAME}}:{{.Version}}"
     image_templates:
       - "{{.Env.REGISTRY}}/{{.Env.IMAGE_NAME}}:{{.Version}}-amd64"
       - "{{.Env.REGISTRY}}/{{.Env.IMAGE_NAME}}:{{.Version}}-arm64"
