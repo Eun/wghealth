@@ -23,21 +23,21 @@ import (
 	"golang.zx2c4.com/wireguard/tun/netstack"
 )
 
-// Client represents a WireGuard client instance
+// Client represents a WireGuard client instance.
 type Client struct {
 	Config *Config
 	device *device.Device
 	tun    *netstack.Net
 }
 
-// NewClient creates a new WireGuard client from configuration
+// NewClient creates a new WireGuard client from configuration.
 func NewClient(config *Config) (*Client, error) {
 	return &Client{
 		Config: config,
 	}, nil
 }
 
-// Connect establishes the WireGuard connection
+// Connect establishes the WireGuard connection.
 func (c *Client) Connect() error {
 	// Parse client address
 	clientAddr, err := c.Config.GetClientAddress()
@@ -88,7 +88,7 @@ func (c *Client) Connect() error {
 	return nil
 }
 
-// buildIPCConfig creates the IPC configuration string for the WireGuard device
+// buildIPCConfig creates the IPC configuration string for the WireGuard device.
 func (c *Client) buildIPCConfig() (string, error) {
 	var config strings.Builder
 	wgConfig := c.Config.GetWireGuardConfig()
@@ -98,15 +98,15 @@ func (c *Client) buildIPCConfig() (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("failed to encode private_key: %w", err)
 	}
-	config.WriteString(fmt.Sprintf("private_key=%s\n", privateKeyHex))
+	fmt.Fprintf(&config, "private_key=%s\n", privateKeyHex)
 
 	// Configure peer (server)
 	publicKeyHex, err := keyToHex(wgConfig.PublicKey)
 	if err != nil {
 		return "", fmt.Errorf("failed to encode public_key: %w", err)
 	}
-	config.WriteString(fmt.Sprintf("public_key=%s\n", publicKeyHex))
-	config.WriteString(fmt.Sprintf("endpoint=%s\n", c.Config.resolvedEndpoint))
+	fmt.Fprintf(&config, "public_key=%s\n", publicKeyHex)
+	fmt.Fprintf(&config, "endpoint=%s\n", c.Config.resolvedEndpoint)
 
 	// Set preshared key if provided
 	if wgConfig.PresharedKey != "" {
@@ -114,23 +114,23 @@ func (c *Client) buildIPCConfig() (string, error) {
 		if err != nil {
 			return "", fmt.Errorf("failed to encode preshared_key: %w", err)
 		}
-		config.WriteString(fmt.Sprintf("preshared_key=%s\n", presharedKeyHex))
+		fmt.Fprintf(&config, "preshared_key=%s\n", presharedKeyHex)
 	}
 
 	// Set persistent keepalive if provided
 	if wgConfig.PersistentKeepalive > 0 {
-		config.WriteString(fmt.Sprintf("persistent_keepalive_interval=%d\n", wgConfig.PersistentKeepalive))
+		fmt.Fprintf(&config, "persistent_keepalive_interval=%d\n", wgConfig.PersistentKeepalive)
 	}
 
 	// Set allowed IPs
 	for _, allowedIP := range wgConfig.AllowedIPs {
-		config.WriteString(fmt.Sprintf("allowed_ip=%s\n", allowedIP))
+		fmt.Fprintf(&config, "allowed_ip=%s\n", allowedIP)
 	}
 
 	return config.String(), nil
 }
 
-// keyToHex converts a key (base64 or hex) to hex format for IPC
+// keyToHex converts a key (base64 or hex) to hex format for IPC.
 func keyToHex(key string) (string, error) {
 	// Decode the key (handles both base64 and hex)
 	decoded, err := decodeKey(key)
@@ -141,7 +141,7 @@ func keyToHex(key string) (string, error) {
 	return hex.EncodeToString(decoded), nil
 }
 
-// Ping sends ICMP ping packets to the target and returns success/failure
+// Ping sends ICMP ping packets to the target and returns success/failure.
 func (c *Client) Ping(ctx context.Context) error {
 	if c.tun == nil {
 		return fmt.Errorf("client not connected")
@@ -180,7 +180,7 @@ func (c *Client) Ping(ctx context.Context) error {
 	for i := 0; i < count; i++ {
 		// Create ping request
 		requestPing := icmp.Echo{
-			ID:   rand.Intn(1 << 16),
+			ID:   rand.Intn(1 << 16), //nolint:gosec // ping sequence IDs are not security-sensitive
 			Seq:  i,
 			Data: []byte(fmt.Sprintf("wghealth ping %d", i)),
 		}
@@ -265,7 +265,7 @@ func (c *Client) Ping(ctx context.Context) error {
 	return nil
 }
 
-// resolveTarget resolves the target hostname or IP address
+// resolveTarget resolves the target hostname or IP address.
 func (c *Client) resolveTarget(target string) (netip.Addr, error) {
 	// Try parsing as IP address first
 	if addr, err := netip.ParseAddr(target); err == nil {
@@ -294,7 +294,7 @@ func (c *Client) resolveTarget(target string) (netip.Addr, error) {
 	return addr, nil
 }
 
-// HTTPCheck performs an HTTP health check
+// HTTPCheck performs an HTTP health check.
 func (c *Client) HTTPCheck(ctx context.Context) error {
 	if c.tun == nil {
 		return fmt.Errorf("client not connected")
@@ -312,7 +312,7 @@ func (c *Client) HTTPCheck(ctx context.Context) error {
 	}
 
 	// Create request
-	req, err := http.NewRequestWithContext(ctx, httpConfig.Method, httpConfig.URL, nil)
+	req, err := http.NewRequestWithContext(ctx, httpConfig.Method, httpConfig.URL, http.NoBody)
 	if err != nil {
 		return fmt.Errorf("failed to create HTTP request: %w", err)
 	}
@@ -347,7 +347,8 @@ func (c *Client) HTTPCheck(ctx context.Context) error {
 			Ints("expected_codes", httpConfig.ExpectedStatusCodes).
 			Dur("latency", latency).
 			Msg("HTTP request returned unexpected status")
-		return fmt.Errorf("HTTP request returned unexpected status: got %d, expected one of %v", resp.StatusCode, httpConfig.ExpectedStatusCodes)
+		return fmt.Errorf("HTTP request returned unexpected status: got %d, expected one of %v",
+			resp.StatusCode, httpConfig.ExpectedStatusCodes)
 	}
 
 	log.Ctx(ctx).Info().
@@ -359,7 +360,7 @@ func (c *Client) HTTPCheck(ctx context.Context) error {
 	return nil
 }
 
-// HTTPSCheck performs an HTTPS health check
+// HTTPSCheck performs an HTTPS health check.
 func (c *Client) HTTPSCheck(ctx context.Context) error {
 	if c.tun == nil {
 		return fmt.Errorf("client not connected")
@@ -370,7 +371,7 @@ func (c *Client) HTTPSCheck(ctx context.Context) error {
 
 	// Create HTTPS client using the netstack dialer
 	tlsConfig := &tls.Config{
-		InsecureSkipVerify: httpsConfig.InsecureSkipVerify,
+		InsecureSkipVerify: httpsConfig.InsecureSkipVerify, //nolint:gosec // user-controlled opt-in
 	}
 
 	httpClient := &http.Client{
@@ -382,7 +383,7 @@ func (c *Client) HTTPSCheck(ctx context.Context) error {
 	}
 
 	// Create request
-	req, err := http.NewRequestWithContext(ctx, httpsConfig.Method, httpsConfig.URL, nil)
+	req, err := http.NewRequestWithContext(ctx, httpsConfig.Method, httpsConfig.URL, http.NoBody)
 	if err != nil {
 		return fmt.Errorf("failed to create HTTPS request: %w", err)
 	}
@@ -417,7 +418,8 @@ func (c *Client) HTTPSCheck(ctx context.Context) error {
 			Ints("expected_codes", httpsConfig.ExpectedStatusCodes).
 			Dur("latency", latency).
 			Msg("HTTPS request returned unexpected status")
-		return fmt.Errorf("HTTPS request returned unexpected status: got %d, expected one of %v", resp.StatusCode, httpsConfig.ExpectedStatusCodes)
+		return fmt.Errorf("HTTPS request returned unexpected status: got %d, expected one of %v",
+			resp.StatusCode, httpsConfig.ExpectedStatusCodes)
 	}
 
 	log.Ctx(ctx).Info().
@@ -429,7 +431,7 @@ func (c *Client) HTTPSCheck(ctx context.Context) error {
 	return nil
 }
 
-// Close closes the WireGuard connection
+// Close closes the WireGuard connection.
 func (c *Client) Close() error {
 	if c.device != nil {
 		c.device.Close()
