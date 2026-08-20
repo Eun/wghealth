@@ -15,10 +15,11 @@ import (
 	"sync"
 	"time"
 
+	"wghealth"
+
 	"github.com/google/uuid"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
-	"wghealth"
 )
 
 func main() {
@@ -37,18 +38,19 @@ func main() {
 	if err != nil {
 		log.Fatal().Err(err).Msg("Failed to create client")
 	}
-	defer client.Close()
 
+	var exitCode int
 	if *serverMode {
 		// Run in server mode
 		log.Info().Str("address", *serverAddress).
 			Bool("keep-alive", *serverKeepAlive).
 			Msg("Starting server mode")
-		os.Exit(runServerMode(*serverAddress, *serverKeepAlive, client))
-		return
+		exitCode = runServerMode(*serverAddress, *serverKeepAlive, client)
+	} else {
+		exitCode = runOneOfMode(client)
 	}
-	// Exit with proper code
-	os.Exit(runOneOfMode(client))
+	_ = client.Close()
+	os.Exit(exitCode)
 }
 
 func createClient(configPath string) (*wghealth.Client, error) {
@@ -154,13 +156,14 @@ func runServerMode(serverAddress string, keepWireguardConnectionAlive bool, clie
 	return 0
 }
 
-func writeJSONResponse(w http.ResponseWriter, statusCode int, status string, requestID string, requestStart time.Time) {
+func writeJSONResponse(w http.ResponseWriter, statusCode int, status, requestID string, requestStart time.Time) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(statusCode)
 
 	duration := time.Since(requestStart).Milliseconds()
 
-	fmt.Fprintf(w, `{"status":%q,"request_id":%q,"duration_ms":%d,"timestamp":%q}`, status, requestID, duration, time.Now().Format(time.RFC3339))
+	_, _ = fmt.Fprintf(w, `{"status":%q,"request_id":%q,"duration_ms":%d,"timestamp":%q}`,
+		status, requestID, duration, time.Now().Format(time.RFC3339))
 }
 
 func doHealthCheck(ctx context.Context, client *wghealth.Client) error {

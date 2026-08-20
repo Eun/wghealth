@@ -7,6 +7,7 @@ package wghealth
 
 import (
 	"bufio"
+	"context"
 	"encoding/base64"
 	"encoding/hex"
 	"fmt"
@@ -18,7 +19,7 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// Config represents the application configuration
+// Config represents the application configuration.
 type Config struct {
 	// Path to WireGuard configuration file
 	WireGuardConfigPath string `yaml:"wireguard_config_path"`
@@ -34,7 +35,7 @@ type Config struct {
 	resolvedEndpoint string
 }
 
-// WireGuardConfig represents parsed WireGuard settings
+// WireGuardConfig represents parsed WireGuard settings.
 type WireGuardConfig struct {
 	PrivateKey          string
 	Address             string
@@ -47,31 +48,31 @@ type WireGuardConfig struct {
 	PersistentKeepalive int
 }
 
-// PingConfig represents the ping test configuration
+// PingConfig represents the ping test configuration.
 type PingConfig struct {
 	Target  string `yaml:"target"`
 	Timeout int    `yaml:"timeout,omitempty"` // in seconds
 	Count   int    `yaml:"count,omitempty"`
 }
 
-// HTTPConfig represents the HTTP health check configuration
+// HTTPConfig represents the HTTP health check configuration.
 type HTTPConfig struct {
 	URL                 string `yaml:"url"`
-	Timeout             int    `yaml:"timeout,omitempty"`                 // in seconds
-	Method              string `yaml:"method,omitempty"`                  // default: GET
-	ExpectedStatusCodes []int  `yaml:"expected_status_codes,omitempty"`   // expected HTTP status codes (default: [200])
+	Timeout             int    `yaml:"timeout,omitempty"`               // in seconds
+	Method              string `yaml:"method,omitempty"`                // default: GET
+	ExpectedStatusCodes []int  `yaml:"expected_status_codes,omitempty"` // expected HTTP status codes (default: [200])
 }
 
-// HTTPSConfig represents the HTTPS health check configuration
+// HTTPSConfig represents the HTTPS health check configuration.
 type HTTPSConfig struct {
 	URL                 string `yaml:"url"`
-	Timeout             int    `yaml:"timeout,omitempty"`                 // in seconds
-	Method              string `yaml:"method,omitempty"`                  // default: GET
-	InsecureSkipVerify  bool   `yaml:"insecure_skip_verify,omitempty"`    // skip certificate verification
-	ExpectedStatusCodes []int  `yaml:"expected_status_codes,omitempty"`   // expected HTTP status codes (default: [200])
+	Timeout             int    `yaml:"timeout,omitempty"`               // in seconds
+	Method              string `yaml:"method,omitempty"`                // default: GET
+	InsecureSkipVerify  bool   `yaml:"insecure_skip_verify,omitempty"`  // skip certificate verification
+	ExpectedStatusCodes []int  `yaml:"expected_status_codes,omitempty"` // expected HTTP status codes (default: [200])
 }
 
-// LoadConfig loads configuration from a YAML file
+// LoadConfig loads configuration from a YAML file.
 func LoadConfig(path string) (*Config, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -140,7 +141,7 @@ func LoadConfig(path string) (*Config, error) {
 	return &config, nil
 }
 
-// parseWireGuardConfig parses the WireGuard INI-style configuration
+// parseWireGuardConfig parses the WireGuard INI-style configuration.
 func parseWireGuardConfig(configStr string) (*WireGuardConfig, error) {
 	config := &WireGuardConfig{}
 	scanner := bufio.NewScanner(strings.NewReader(configStr))
@@ -183,7 +184,7 @@ func parseWireGuardConfig(configStr string) (*WireGuardConfig, error) {
 					config.DNS[i] = strings.TrimSpace(config.DNS[i])
 				}
 			case "mtu":
-				fmt.Sscanf(value, "%d", &config.MTU)
+				_, _ = fmt.Sscanf(value, "%d", &config.MTU)
 			}
 		case "peer":
 			switch strings.ToLower(key) {
@@ -199,7 +200,7 @@ func parseWireGuardConfig(configStr string) (*WireGuardConfig, error) {
 			case "presharedkey":
 				config.PresharedKey = value
 			case "persistentkeepalive":
-				fmt.Sscanf(value, "%d", &config.PersistentKeepalive)
+				_, _ = fmt.Sscanf(value, "%d", &config.PersistentKeepalive)
 			}
 		}
 	}
@@ -211,8 +212,19 @@ func parseWireGuardConfig(configStr string) (*WireGuardConfig, error) {
 	return config, nil
 }
 
-// Validate checks if the configuration is valid
+// Validate checks if the configuration is valid.
 func (c *Config) Validate() error {
+	if err := c.validateWireGuard(); err != nil {
+		return err
+	}
+	if err := c.validateHealthChecks(); err != nil {
+		return err
+	}
+	return nil
+}
+
+// validateWireGuard validates the WireGuard-specific fields and resolves the endpoint.
+func (c *Config) validateWireGuard() error {
 	if c.parsedWG.PrivateKey == "" {
 		return fmt.Errorf("private_key is required")
 	}
@@ -240,16 +252,8 @@ func (c *Config) Validate() error {
 	if c.parsedWG.Endpoint == "" {
 		return fmt.Errorf("server.endpoint is required")
 	}
-
-	c.resolvedEndpoint = c.parsedWG.Endpoint
-	// resolve s.Server.Endpoint if it is a hostname
-	host, port, _ := net.SplitHostPort(c.resolvedEndpoint)
-	if net.ParseIP(host) == nil {
-		addrs, err := net.LookupHost(host)
-		if err != nil || len(addrs) == 0 {
-			return fmt.Errorf("unable to resolve server.endpoint hostname: %w", err)
-		}
-		c.resolvedEndpoint = net.JoinHostPort(addrs[0], port)
+	if err := c.resolveEndpoint(); err != nil {
+		return err
 	}
 
 	if len(c.parsedWG.AllowedIPs) == 0 {
@@ -266,8 +270,26 @@ func (c *Config) Validate() error {
 			return fmt.Errorf("invalid server.preshared_key: %w", err)
 		}
 	}
+	return nil
+}
 
-	// Validate that exactly one health check is configured
+// resolveEndpoint resolves the endpoint hostname to an IP address if needed.
+func (c *Config) resolveEndpoint() error {
+	c.resolvedEndpoint = c.parsedWG.Endpoint
+	host, port, _ := net.SplitHostPort(c.resolvedEndpoint)
+	if net.ParseIP(host) == nil {
+		var resolver net.Resolver
+		addrs, err := resolver.LookupHost(context.Background(), host)
+		if err != nil || len(addrs) == 0 {
+			return fmt.Errorf("unable to resolve server.endpoint hostname: %w", err)
+		}
+		c.resolvedEndpoint = net.JoinHostPort(addrs[0], port)
+	}
+	return nil
+}
+
+// validateHealthChecks validates that exactly one health check is configured.
+func (c *Config) validateHealthChecks() error {
 	checksConfigured := 0
 	if c.Ping != nil {
 		checksConfigured++
@@ -287,18 +309,16 @@ func (c *Config) Validate() error {
 			return fmt.Errorf("https.url is required")
 		}
 	}
-
 	if checksConfigured == 0 {
 		return fmt.Errorf("at least one health check (ping, http, or https) must be configured")
 	}
 	if checksConfigured > 1 {
 		return fmt.Errorf("only one health check type can be configured at a time")
 	}
-
 	return nil
 }
 
-// decodeKey decodes a base64 or hex encoded key
+// decodeKey decodes a base64 or hex encoded key.
 func decodeKey(key string) ([]byte, error) {
 	key = strings.TrimSpace(key)
 
@@ -315,7 +335,7 @@ func decodeKey(key string) ([]byte, error) {
 	return nil, fmt.Errorf("key must be 32 bytes encoded as base64 or hex")
 }
 
-// GetClientAddress returns the parsed client address
+// GetClientAddress returns the parsed client address.
 func (c *Config) GetClientAddress() (netip.Addr, error) {
 	// Try parsing as prefix first
 	if prefix, err := netip.ParsePrefix(c.parsedWG.Address); err == nil {
@@ -325,7 +345,7 @@ func (c *Config) GetClientAddress() (netip.Addr, error) {
 	return netip.ParseAddr(c.parsedWG.Address)
 }
 
-// GetDNSServers returns parsed DNS server addresses
+// GetDNSServers returns parsed DNS server addresses.
 func (c *Config) GetDNSServers() ([]netip.Addr, error) {
 	if len(c.parsedWG.DNS) == 0 {
 		return nil, nil
@@ -342,7 +362,7 @@ func (c *Config) GetDNSServers() ([]netip.Addr, error) {
 	return servers, nil
 }
 
-// GetWireGuardConfig returns the parsed WireGuard configuration
+// GetWireGuardConfig returns the parsed WireGuard configuration.
 func (c *Config) GetWireGuardConfig() *WireGuardConfig {
 	return c.parsedWG
 }
