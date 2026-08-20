@@ -15,10 +15,11 @@ import (
 	"sync"
 	"time"
 
+	"wghealth"
+
 	"github.com/google/uuid"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
-	"wghealth"
 )
 
 func main() {
@@ -26,107 +27,114 @@ func main() {
 	configPath := flag.String("config", "wghealth.yaml", "path to configuration file")
 	serverMode := flag.Bool("server-mode", false, "run in server mode")
 	serverAddress := flag.String("server-address", ":8080", "address for server mode to listen on")
-	serverKeepAlive := flag.Bool("server-keep-alive", false, "keep the wireguard connetion alive")
+	serverKeepAlive := flag.Bool("server-keep-alive", false, "keep the wireguard connection alive")
 	flag.Parse()
 
 	// Configure zerolog for JSON output
 	zerolog.TimeFieldFormat = zerolog.TimeFormatUnix
 	log.Logger = log.Output(os.Stdout)
 
-	client, err := createClient(*configPath)
-	if err != nil {
-		log.Fatal().Err(err).Msg("Failed to create client")
-	}
-	defer client.Close()
+	log.Info().Str("config", *configPath).Msg("Loading configuration")
 
+	checks, err := wghealth.LoadConfig(*configPath)
+	if err != nil {
+		log.Fatal().Err(err).Msg("Failed to load configuration")
+	}
+
+	// Build one client per check.
+	clients := make([]*wghealth.Client, 0, len(checks))
+	for _, check := range checks {
+		client, err := wghealth.NewClient(check)
+		if err != nil {
+			log.Fatal().Err(err).Str("name", check.Name).Msg("Failed to create client")
+		}
+		clients = append(clients, client)
+	}
+
+	var exitCode int
 	if *serverMode {
-		// Run in server mode
 		log.Info().Str("address", *serverAddress).
 			Bool("keep-alive", *serverKeepAlive).
 			Msg("Starting server mode")
-		os.Exit(runServerMode(*serverAddress, *serverKeepAlive, client))
-		return
+		exitCode = runServerMode(*serverAddress, *serverKeepAlive, clients)
+	} else {
+		exitCode = runOneOfMode(clients)
 	}
-	// Exit with proper code
-	os.Exit(runOneOfMode(client))
+
+	for _, client := range clients {
+		_ = client.Close()
+	}
+
+	os.Exit(exitCode)
 }
 
-func createClient(configPath string) (*wghealth.Client, error) {
-	log.Info().Str("config", configPath).Msg("Loading configuration")
+// runOneOfMode runs every configured check sequentially and returns 1 if any fails.
+func runOneOfMode(clients []*wghealth.Client) int {
+	for _, client := range clients {
+		log.Info().Str("name", client.Config.Name).Msg("Connecting to WireGuard server")
+		if err := client.Connect(); err != nil {
+			log.Error().Err(err).Str("name", client.Config.Name).Msg("Failed to connect to server")
+			return 1
+		}
+		log.Info().Str("name", client.Config.Name).Msg("Connected successfully")
 
-	// Load configuration
-	config, err := wghealth.LoadConfig(configPath)
-	if err != nil {
-		log.Error().Err(err).Msg("Failed to load configuration")
-		return nil, err
+		if err := doHealthCheck(context.Background(), client); err != nil {
+			return 1
+		}
 	}
-
-	// Create client
-	client, err := wghealth.NewClient(config)
-	if err != nil {
-		log.Error().Err(err).Msg("Failed to create client")
-		return nil, err
-	}
-	return client, nil
-}
-
-func runOneOfMode(client *wghealth.Client) int {
-	// Connect to WireGuard server
-	log.Info().Msg("Connecting to WireGuard server")
-	if err := client.Connect(); err != nil {
-		log.Error().Err(err).Msg("Failed to connect to server")
-		return 1
-	}
-	log.Info().Msg("Connected successfully")
-
-	err := doHealthCheck(context.Background(), client)
-	if err != nil {
-		return 1
-	}
-
 	return 0
 }
 
-func runServerMode(serverAddress string, keepWireguardConnectionAlive bool, client *wghealth.Client) int {
-	var mu sync.Mutex
+// runServerMode registers one HTTP endpoint per check and starts the server.
+func runServerMode(serverAddress string, keepWireguardConnectionAlive bool, clients []*wghealth.Client) int {
 	mux := http.NewServeMux()
 
-	mux.HandleFunc("GET /check", func(w http.ResponseWriter, r *http.Request) {
-		mu.Lock()
-		defer mu.Unlock()
+	for _, client := range clients {
+		client := client // capture for closure
+		var mu sync.Mutex
+		ep := client.Config.GetEndpoint()
 
-		requestStart := time.Now()
-		requestID := uuid.New().String()
-		logger := log.With().Str("request_id", requestID).Logger()
-		r = r.WithContext(logger.WithContext(r.Context()))
-		logger.Info().Msg("Received health check request")
+		log.Info().
+			Str("name", client.Config.Name).
+			Str("endpoint", ep).
+			Msg("Registering health check endpoint")
 
-		if !keepWireguardConnectionAlive || !client.Connected() {
-			logger.Info().Msg("Connecting to WireGuard server")
-			if err := client.Connect(); err != nil {
-				logger.Error().Err(err).Msg("Failed to connect to server")
+		mux.HandleFunc("GET "+ep, func(w http.ResponseWriter, r *http.Request) {
+			mu.Lock()
+			defer mu.Unlock()
+
+			requestStart := time.Now()
+			requestID := uuid.New().String()
+			logger := log.With().Str("request_id", requestID).Str("name", client.Config.Name).Logger()
+			r = r.WithContext(logger.WithContext(r.Context()))
+			logger.Info().Msg("Received health check request")
+
+			if !keepWireguardConnectionAlive || !client.Connected() {
+				logger.Info().Msg("Connecting to WireGuard server")
+				if err := client.Connect(); err != nil {
+					logger.Error().Err(err).Msg("Failed to connect to server")
+					writeJSONResponse(w, http.StatusServiceUnavailable, "health check failed", requestID, requestStart)
+					return
+				}
+				logger.Info().Msg("Connected successfully")
+			}
+
+			err := doHealthCheck(r.Context(), client)
+			if err != nil {
+				logger.Error().Err(err).Msg("Health check failed")
 				writeJSONResponse(w, http.StatusServiceUnavailable, "health check failed", requestID, requestStart)
 				return
 			}
-			logger.Info().Msg("Connected successfully")
-		}
 
-		// Perform health check
-		err := doHealthCheck(r.Context(), client)
-		if err != nil {
-			logger.Error().Err(err).Msg("Health check failed")
-			writeJSONResponse(w, http.StatusServiceUnavailable, "health check failed", requestID, requestStart)
-			return
-		}
-
-		if !keepWireguardConnectionAlive {
-			if err := client.Close(); err != nil {
-				logger.Error().Err(err).Msg("Failed to disconnect from server")
+			if !keepWireguardConnectionAlive {
+				if err := client.Close(); err != nil {
+					logger.Error().Err(err).Msg("Failed to disconnect from server")
+				}
 			}
-		}
 
-		writeJSONResponse(w, http.StatusOK, "health check succeeded", requestID, requestStart)
-	})
+			writeJSONResponse(w, http.StatusOK, "health check succeeded", requestID, requestStart)
+		})
+	}
 
 	srv := http.Server{
 		Addr:              serverAddress,
@@ -154,17 +162,17 @@ func runServerMode(serverAddress string, keepWireguardConnectionAlive bool, clie
 	return 0
 }
 
-func writeJSONResponse(w http.ResponseWriter, statusCode int, status string, requestID string, requestStart time.Time) {
+func writeJSONResponse(w http.ResponseWriter, statusCode int, status, requestID string, requestStart time.Time) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(statusCode)
 
 	duration := time.Since(requestStart).Milliseconds()
 
-	fmt.Fprintf(w, `{"status":%q,"request_id":%q,"duration_ms":%d,"timestamp":%q}`, status, requestID, duration, time.Now().Format(time.RFC3339))
+	_, _ = fmt.Fprintf(w, `{"status":%q,"request_id":%q,"duration_ms":%d,"timestamp":%q}`,
+		status, requestID, duration, time.Now().Format(time.RFC3339))
 }
 
 func doHealthCheck(ctx context.Context, client *wghealth.Client) error {
-	// Perform health check based on configuration
 	var checkErr error
 	if client.Config.Ping != nil {
 		log.Ctx(ctx).Info().
